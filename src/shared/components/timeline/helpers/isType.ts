@@ -1,1 +1,0 @@
-export const isArray = predicate => Array.isArray(predicate);

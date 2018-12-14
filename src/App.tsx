@@ -14,14 +14,14 @@ export class App extends React.Component {
       return;
 
     this.timeline = new Timeline({
-      container
+      minHeight: 48,
+      maxHeight: 80,
+      container,
     });
 
     this.timeline.build(dataset);
 
     this.timeline.brush$.subscribe(console.debug);
-    this.timeline.zoom$.subscribe(console.debug);
-
 
     window.addEventListener('resize', this.resize);
   }

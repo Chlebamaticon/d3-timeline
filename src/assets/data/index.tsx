@@ -499,8 +499,9 @@ const rawData: Record<string, number> = [
   { timestamp: '2017-12-18', count: 42 },
   { timestamp: '2018-04-03', count: 26 },
   { timestamp: '2018-11-16', count: 14 },
-  { timestamp: '2017-12-17', count: 23 },
-  { timestamp: '2018-04-06', count: 50 }
+  { timestamp: '2017-01-01', count: 23 },
+  { timestamp: '2018-01-01', count: 23 },
+  { timestamp: '2019-01-01', count: 23 }
 ].reduce(
   (acc, { timestamp, count }) => {
     if ( !acc[timestamp] )

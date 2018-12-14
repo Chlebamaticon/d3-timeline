@@ -27,3 +27,14 @@ html, body {
 .app__container {
     margin: 64px;
 }
+
+.timeline__axis--weekly {
+    opacity: 0.33;
+    stroke: red;
+}
+
+.timeline__axis--yearly {
+    font-size: 18px;
+    font-weight: bold;
+    color: rgba(0,0,0, .3);
+}

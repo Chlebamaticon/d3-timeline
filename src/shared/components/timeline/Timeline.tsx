@@ -1,268 +1,188 @@
-import { Subject, Observable } from 'rxjs';
-import { filter, tap } from 'rxjs/operators';
-import { select, event } from 'd3-selection';
-import { line as lineShape } from 'd3-shape';
-
-import {
-  Data,
-  TimelineAxes,
-  TimelineConfiguration,
-  TimelineElements,
-  TimelineEvent,
-  TimelineParameters,
-  TimelineScales,
-  TimelineTransformCache,
-  TimelineShapes,
-  TimelineEventType,
-} from './interfaces';
+import { Observable } from 'rxjs/internal/Observable';
+import { Subject } from 'rxjs/internal/Subject';
+import { filter } from 'rxjs/operators';
+import { max, min } from 'd3-array';
+import { scaleTime, ScaleTime, ScaleLinear, scaleLinear } from 'd3-scale';
+import { Selection, select, event } from 'd3-selection';
+import { timeDay } from 'd3-time';
 
 import { 
-  createAxisX, 
-  createAxisY,
-  createSVG, 
-  createWrapper,
-  createZoomBrush,
-  createClipPath,
-  createLine
-} from './factories';
+  TimelineSize, 
+  TimelineView, 
+  TimelineScales, 
+  TimelineTransformCache, 
+  TimelineEvent, 
+  TimelineConfiguration,
+  TimelineParameters
+} from './interfaces';
+import { parseDate, toISO } from './helpers';
+import { TimelineAxes } from './TimelineAxes';
+import { TimelineChart } from './TimelineChart';
+import { TimelineControls } from './TimelineControls';
 
-import {
-  parseDate, isArray
-} from './helpers';
-
-import { TimelineControls } from './interfaces/TimelineControls';
-import { extent, max } from 'd3-array';
-import { findData } from './helpers/findData';
-
-export class Timeline {
-  static readonly CLIP_ID = 'shape-clip';
-
-  protected axes: TimelineAxes = {};
-  protected controls: TimelineControls = {};
-  protected elements: TimelineElements = {};
+export class Timeline<T = any> {
+  protected size!: TimelineSize;
+  protected view!: TimelineView;
   protected scales: TimelineScales = {};
-  protected shapes: TimelineShapes = {};
   protected transform: TimelineTransformCache = {};
 
-  public dataset: Data[] = [];
-  public readonly zoom$: Observable<TimelineEvent>;
-  public readonly brush$: Observable<TimelineEvent>;
+  public axes!: TimelineAxes<T>;
+  public chart!: TimelineChart<T>;
+  public controls!: TimelineControls<T>;
 
-  private readonly configuration: TimelineConfiguration;
-  private readonly subject: Subject< TimelineEvent > = new Subject();
+  public dataset!: T[];
+  public readonly brush$: Observable< TimelineEvent<T> >;
 
-  constructor(configuration: TimelineParameters) {
+  private scaleX!: ScaleTime<any, any>;
+  private scalableX!: ScaleTime<any, any>;
+  private scaleY!: ScaleLinear<any, any>;
+  private wrapper!: Selection<HTMLDivElement, any, any, any>;
+  private svg!: Selection<SVGSVGElement, any, any, any>;
+  private readonly configuration: TimelineConfiguration<T>;
+  private readonly subject: Subject< TimelineEvent<T> > = new Subject();
+
+  constructor(configuration: TimelineParameters<T>) {
     this.configuration = {
+      xSelector: (d: any) => d.timestamp,
+      ySelector: (d: any) => d.count,
       spacing: 32,
       rootClass: 'timeline',
       aspectRatio: 2 / 1,
       ...configuration
     };
 
-    this.zoom$ = this.subject.pipe(
-      filter(predicate => predicate.type === 'zoom')
-    );
-
     this.brush$ = this.subject.pipe(
       filter(predicate => predicate.type === 'brush')
     );
   }
 
-  public build(dataset: Data[] = this.dataset): void {
-    this.dataset = dataset;
-
-    this.createContainers()
-        .fit()
-        .createDefs()
-        .createAxes()
-        .createChart()
-        .createControls()
-        .createListeners();
-  }
-
-  public rebuild(): void {
-    const { wrapper } = this.elements;
-    console.debug('rebuild!');
-
-    if ( !wrapper )
-      return;
-
-    wrapper.remove();
-    this.build();
-  }
-
-  public update(dataset: Data[] = this.dataset): void {
-    const { x: scaleX, y: scaleY, scalableX } = this.scales;
-
-    if ( !scaleX )
-      throw new Error('Timeline#update: scaleX is undefined');
-
-    if ( !scalableX )
-      throw new Error('Timeline#update: scalableX is undefined');
-
-    if ( !scaleY )
-      throw new Error('Timeline#update: scaleY is undefined');
-
-    this.dataset = dataset;
-
-    scaleX.domain(
-        // @ts-ignore
-        extent(
-          dataset, 
-          d => parseDate(d.timestamp)
-        )
-    );
-    scalableX.domain(scaleX.domain());
-
-    scaleY.domain([
-      0,
-      // @ts-ignore
-      max(dataset, d => d.count)
-    ]);
-
-    return this.rebuild();
+  public build(dataset: T[]): void {
+    this
+      .fit()
+      .init(dataset)
+      .createListeners();
   }
 
   public fit(): this {
-    const { svg } = this.elements;
-    const { container, aspectRatio } = this.configuration;
+    const { aspectRatio, container, rootClass, spacing, hide = {} } = this.configuration;
 
-    if (!svg)
-      return this;
+    this.size = {
+      width: container.clientWidth,
+      height: container.clientWidth / aspectRatio,
+      innerWidth: container.clientWidth - (spacing * 2),
+      innerHeight: (container.clientWidth / aspectRatio) - (spacing * 2),
+    };
 
-    svg
-      .attr('width', `${container.clientWidth}px`)
-      .attr('height', `${container.clientWidth / aspectRatio}px`);
+    const { 
+      minHeight = 0, 
+      maxHeight = this.size.height
+    } = this.configuration;
 
-    return this;
-  }
+    this.view = {
+      width: this.size.width,
+      height: this.size.height > maxHeight 
+        ? maxHeight : (this.size.height < minHeight)
+          ? minHeight
+          : this.size.height
+    };
 
-  private createContainers(): this {
-    const { container } = this.configuration;
-
-    const [ wrapperElement ] = createWrapper(select(container), this.configuration);
-    this.elements.wrapper = wrapperElement();
-    
-    const [ svgElement ] = createSVG(this.elements.wrapper, this.configuration);
-    this.elements.svg = svgElement();
-
-    return this;
-  }
-
-  private createDefs(): this {
-    const { svg } = this.elements;
-
-    if ( svg ) {
-      const [ renderClipPath ] = createClipPath(svg, this.configuration, { id: Timeline.CLIP_ID });
-
-      renderClipPath();
+    if ( this.scaleX ) {
+      this.scaleX.range([ hide.axisY ? 0 : spacing, this.view.width - 1 ]);
+      this.scalableX.range( this.scaleX.range() );
     }
 
-    return this;
-  }
+    if ( this.axes )
+      this.axes.update();
 
-  private createAxes() {
-    const dataset = this.dataset;
-    const { svg } = this.elements;
-    const { rootClass, spacing } = this.configuration;
+    if ( this.chart )
+      this.chart.update();
 
-    if ( !svg )
-      throw new Error('Timeline#createControls: svg does not exist');
+    if ( this.controls )
+      this.controls.update();
 
-    const axes = svg
-      .append('g')
-      .attr('class', `${ rootClass }__axes`)
-      .attr('transform', `translate(${ spacing }, ${ -spacing })`);
-
-    const [ 
-      scaleX, scalableX, axisX, renderAxisX 
-    ] = createAxisX(axes, this.configuration, { dataset });
-
-    const [ 
-      scaleY, axisY, renderAxisY 
-    ] = createAxisY(axes, this.configuration, { dataset });    
-
-    this.scales = {
-      x: scaleX,
-      y: scaleY,
-      scalableX
-    };
-
-    this.axes = {
-      x: axisX,
-      y: axisY
-    };
-
-    this.elements.axes = axes;
-    this.elements.axisX = renderAxisX();
-    this.elements.axisY = renderAxisY();
+    if ( this.svg )
+      this.svg
+          .attr('class', `${ rootClass }__svg`)
+          .attr('style', `display: block; flex: 1 1 100%`)
+          .attr('viewBox', `0 0 ${ this.view.width } ${ this.view.height }`);
 
     return this;
   }
 
-  private createChart(): this {
-    const dataset = this.dataset;
-    const { svg } = this.elements;
-    const { x: scaleX, y: scaleY } = this.scales;
-    const { rootClass } = this.configuration;
+  private init(dataset: T[]): this {
+    const { container, rootClass } = this.configuration;
+    const { width, height } = this.view;
 
-    if ( !svg )
-      throw new Error('Timeline#createControls: svg does not exist');
+    this.dataset = dataset;
 
-    if ( !scaleX )
-      throw new Error('Timeline#createChart: scaleX is undefined');
-
-    if ( !scaleY )
-      throw new Error('Timeline#createChart: scaleY is undefined');
-
-    const chart = svg
-      .append('g')
-      .attr('class', `${ rootClass }__chart`)
-      .attr('transform', `translate(0, 0)`);
-
-    this.shapes = {
-      line: lineShape<Data>()
-        // @ts-ignore
-        .x(d => scaleX(parseDate(d.timestamp)))
-        .y(d => scaleY(d.count))
-    };
-
-    const [ renderLine ] = createLine(chart, this.configuration, {
-      clipId: Timeline.CLIP_ID,
-      shape: this.shapes.line,
-      dataset
-    });
-
-    this.elements.chart = chart;
-    this.elements.line = renderLine();
-
-    return this;
-  }
-
-  private createControls(): this {
-    const { svg } = this.elements;
-    const { x: scaleX } = this.scales;
-    const { rootClass } = this.configuration;
-
-    if ( !svg )
-      throw new Error('Timeline#createControls: svg does not exist');
-
-    if ( !scaleX )
-      throw new Error('Timeline#createControls: scaleX is undefined');
-
-    const controls = svg
-      .append('g')
-      .attr('class', `${ rootClass }__controls`)
-      .attr('transform', `translate(0, 0)`);
-
-    controls.on('wheel', console.debug);
+    this.wrapper = select(container)
+      .append('div')
+      .attr('class', `${rootClass}`)
+      .attr(
+        'style',
+        'width: 100%; height: 100%; display: flex; align-items: center;'
+      );
     
-    const [ brush, zoom, renderZoomBrush ] = createZoomBrush(controls, scaleX, this.configuration);
+    this.svg = this.wrapper
+      .append('svg')
+      .attr('class', `${ rootClass }__svg`)
+      .attr('style', `display: block; flex: 1 1 100%`)
+      .attr('viewBox', `0 0 ${ width } ${ height }`);
 
-    this.controls = { zoom, brush };
-    this.elements.controls = controls;
-    this.elements.zoomBrush = renderZoomBrush();
+    this.createScales();
 
+    const configuration = {
+      view: this.view,
+      ...this.configuration,
+    };
+
+    this.axes = new TimelineAxes(this.svg, configuration);
+    this.chart = new TimelineChart(this.svg, configuration);
+    this.controls = new TimelineControls(this.svg, configuration);
+
+    this.chart.init(this.scalableX, this.scaleY, dataset);
+    this.axes.init(this.scalableX, this.scaleY);
+    this.controls.init(this.scalableX, this.scaleY);
+
+    return this;
+  }
+
+  private createScales(): this {
+    const {
+      hide = {},
+      spacing,
+      xSelector
+    } = this.configuration;
+
+    let minX = min(this.dataset, d => parseDate(xSelector(d)));
+    let maxX = max(this.dataset, d => parseDate(xSelector(d)));
+
+    if ( !minX && !maxX ) {
+      minX = timeDay.offset(new Date(), 0);
+      maxX = timeDay.offset(new Date(), 1);
+    } else {
+      minX = timeDay.offset(minX!, -1);
+      maxX = timeDay.offset(maxX!, 1);
+    }
+
+    this.scaleX = scaleTime()
+      .range([ hide.axisY ? 0 : spacing, this.view.width - 1 ])
+      // @ts-ignore
+      .domain([ minX, maxX ]);
+
+    this.scalableX = scaleTime()
+      .range( this.scaleX.range() )
+      .domain( this.scaleX.domain() );
+
+    this.scaleY = scaleLinear()
+      .range([
+        this.view.height 
+        - ( !(hide.axisX) || !(typeof hide.axisX === 'object' && hide.axisX.daily) ? spacing : 4), 
+        0
+      ])
+      // @ts-ignore
+      .domain([ 0, max(this.dataset, d => d.count )]);
+  
     return this;
   }
 
@@ -273,71 +193,56 @@ export class Timeline {
       zoom.on('zoom', this.onZoom);
 
     if ( brush )
-      brush.on('brush', this.onBrush);
+      brush.on('end', this.onBrushend);
   }
 
-  private onBrush = () => {
-    const dataset = this.dataset;
-    const { x: scaleX, scalableX } = this.scales;
+  private onBrushend = () => {
+    if ( !event.sourceEvent ) return;
+    if ( !event.selection ) return;
 
-    if ( !scalableX || !scaleX )
+    const { elements } = this.controls;
+
+    if ( !elements.brush )
       return;
 
-    const selection = (this.transform.selection = event.selection || scalableX.range());
+    const selection = event.selection.map(this.scalableX.invert);
+    const rounded = selection.map(timeDay.round);
 
-    if ( isArray(selection) ) {
-      const [ start, end ] = selection;
-
-      if ( !(isArray(start) || isArray(end)) ) {
-        const from = scaleX.invert(start);
-        const to = scaleX.invert(end);
-
-        this.next({
-          type: 'brush',
-          selection: [
-            dataset.find(findData(dataset, from)) || dataset[0],
-            dataset.find(findData(dataset, to)) || dataset[dataset.length - 1]
-          ],
-          originalEvent: { ...event }
-        });
-      }
+    if ( rounded[0] >= rounded[1] ) {
+      rounded[0] = timeDay.floor(selection[0]);
+      rounded[1] = timeDay.offset(rounded[1]);
     }
+
+    this.transform.selection = rounded.map(this.scalableX);
+
+    elements
+      .brush
+      .transition()
+      .call(event.target.move, rounded.map(this.scalableX));
+
+    this.next({
+      type: 'brush',
+      selection: [
+        toISO(rounded[0]),
+        toISO(rounded[1]),
+      ],
+      originalEvent: { ...event }
+    });
   }
 
   private onZoom = () => {
-    const dataset = this.dataset;
-    const zoom = (this.transform.zoom = event.transform);
+    const zoom = event.transform;
 
-    const { x: axisX } = this.axes;
-    const { line, axisX: axisXElement } = this.elements;
     const { selection } = this.transform;
-    const { x: scaleX, scalableX } = this.scales;
-    const { line: path } = this.shapes;
+    const { brush, elements } = this.controls;
+    
+    this.scalableX.domain(zoom.rescaleX(this.scaleX).domain());
+  
+    this.axes.update();
+    this.chart.update();
 
-    if ( !line || !scaleX || !path || !axisXElement || !axisX )
-      return;
-
-    scaleX.domain(zoom.rescaleX(scalableX).domain());
-    line.attr('d', path);
-    axisXElement.call(axisX);
-
-    if ( Array.isArray(selection) || !selection ) {
-      const [ start, end ] = selection || zoom.rescaleX(scalableX).domain();
-
-      if ( !(Array.isArray(start) || Array.isArray(end)) ) {
-        const from = selection ? scaleX.invert(start) : start;
-        const to = selection ? scaleX.invert(end) : end;
-
-        this.next({
-          type: 'zoom',
-          selection: [
-            dataset.find(findData(dataset, from)) || dataset[0],
-            dataset.find(findData(dataset, to)) || dataset[dataset.length - 1]
-          ],
-          originalEvent: { ...event }
-        });
-      }
-    }
+    if ( brush && elements.brush && selection )
+      elements.brush.call(brush.move, selection);
   }
 
   private next(timelineEvent: TimelineEvent ) {
