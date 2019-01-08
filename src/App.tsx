@@ -1,12 +1,47 @@
 import * as React from 'react';
-import { Layout } from '@shared/components/Layout';
+import { Timeline } from '@shared/components/timeline/Timeline';
+
+import { dataset } from '@assets/data';
 
 export class App extends React.Component {
-    render() {
-        return (
-            <Layout>
-                App rendered!
-            </Layout>
-        );
-    }
+  private container: React.RefObject<HTMLDivElement> = React.createRef();
+  private timeline!: Timeline;
+
+  componentDidMount() {
+    const { current: container } = this.container;
+
+    if ( !container )
+      return;
+
+    this.timeline = new Timeline({
+      minHeight: 48,
+      maxHeight: 80,
+      container,
+    });
+
+    this.timeline.build(dataset);
+
+    this.timeline.brush$.subscribe(console.debug);
+
+    window.addEventListener('resize', this.resize);
+  }
+
+  componentWillUnmount() {
+    window.removeEventListener('resize', this.resize);
+  }
+
+  resize = () => {
+    if (!this.timeline)
+      return;
+
+    this.timeline.fit();
+  }
+
+  render() {
+    return (
+      <div className="app">
+        <div className="app__container" ref={this.container} />
+      </div>
+    );
+  }
 }
